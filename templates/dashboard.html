@@ -1,0 +1,391 @@
+﻿<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ProjektExo  Dashboard</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="app-header">
+        <div class="app-title">ProjektExo</div>
+        <div class="app-subtitle">Correlation Analysis Dashboard</div>
+      </header>
+
+      <main class="app-main">
+        <!-- Settings Panel -->
+        <section class="card">
+          <div class="card-header">
+            <h2> Settings</h2>
+          </div>
+          <div class="card-body">
+            <form id="settingsForm" method="post" action="/update_settings" style="margin-bottom:10px;">
+              <div style="display:flex; flex-direction:column; gap:10px; max-width:520px;">
+                <!-- Datasets manual input removed: datasets auto-discovered in analysis script -->
+                <label style="display:flex; flex-direction:column; gap:4px;">
+                  <span class="k">Minimum Correlation Threshold: <strong id="mc_val">{{ '%.2f'|format(min_correlation) }}</strong></span>
+                  <input type="range" min="0" max="1" step="0.01" name="min_correlation" id="min_correlation" value="{{ '%.2f'|format(min_correlation) }}" style="width:100%;" />
+                </label>
+                <label style="display:flex; flex-direction:column; gap:4px;">
+                  <span class="k">Moving Average Window (points): <strong id="ma_val">{{ moving_avg_window }}</strong></span>
+                  <input type="range" min="3" max="400" step="1" name="moving_avg_window" id="moving_avg_window" value="{{ moving_avg_window }}" style="width:100%;" />
+                </label>
+                <div id="autosaveStatus" class="mono" style="font-size:11px; color:#6ea8fe; min-height:14px;"></div>
+              </div>
+            </form>
+            <form method="post" action="/run" style="margin:0;">
+              <button type="submit" class="primary" style="padding:10px 20px; background:#28a745; color:#fff; border:none; cursor:pointer; border-radius:4px; font-weight:bold; font-size:15px;">Update Settings</button>
+            </form>
+            {% with messages = get_flashed_messages(with_categories=true) %}
+              {% if messages %}
+              <ul style="margin-top:16px; padding-left:18px;">
+                {% for cat, msg in messages %}
+                  <li class="mono {{ 'flash-error' if cat=='error' else 'flash-ok' }}">{{ msg }}</li>
+                {% endfor %}
+              </ul>
+              {% endif %}
+            {% endwith %}
+          </div>
+        </section>
+
+        {% if has_run %}
+        <section class="card">
+          <div class="card-header">
+            <h2>Run Summary</h2>
+          </div>
+          <div class="card-body meta">
+            <div><span class="k">Started</span><span class="v">{{ started }}</span></div>
+            <div><span class="k">Finished</span><span class="v">{{ finished }}</span></div>
+            <div><span class="k">Duration</span><span class="v">{{ duration_ms }} ms</span></div>
+            <div><span class="k">Min Corr</span><span class="v">{{ '%.2f'|format(min_correlation) }}</span></div>
+            <!-- Removed datasets display row -->
+          </div>
+        </section>
+
+        {% if parsed and parsed.order %}
+          {# Consolidated classification section moved to top #}
+          <section class="card">
+            <div class="card-header">
+              <h2>Classification</h2>
+            </div>
+            <div class="card-body" id="combinedClassifier" style="display:flex; flex-direction:column; gap:14px;">
+              <div class="mono" style="font-size:12px; color:#a9b0c1;">Single heuristic mode: each feature value is projected onto its encoded-target curve; values are averaged and mapped to the nearest class.</div>
+              <div id="featureInputs" class="feat-grid" style="display:grid; gap:8px; grid-template-columns:repeat(auto-fill,minmax(150px,1fr));"></div>
+              <div style="display:flex; gap:12px; align-items:center;">
+                <button type="button" id="runPredict" class="btn-predict" style="padding:6px 14px; background:#6ea8fe; color:#fff; border:none; border-radius:4px; cursor:pointer; font-weight:600;">Predict</button>
+                <div id="predictStatus" class="predict-status mono" style="font-size:12px; color:#a9b0c1;"></div>
+              </div>
+              <div id="predictResult" class="predict-result mono" style="margin-top:4px; font-size:12.5px; display:none; background:#0a0f1f; border:1px solid #212a43; padding:8px; border-radius:6px;"></div>
+            </div>
+          </section>
+          {% for ds in parsed.order %}
+          {% set info = parsed.datasets[ds] %}
+          <section class="card">
+            <div class="card-header">
+              <h2>{{ ds }}</h2>
+            </div>
+            <div class="card-body">
+              <div class="grid-2">
+                <div style="display: flex; flex-direction: column; height: 100%;">
+                  <div class="section-title">Headings</div>
+                  <div class="table-wrap scroll-y" style="flex: 1; overflow-y: auto;">
+                    <table class="tbl sticky-head" style="width: 100%;">
+                      <thead>
+                        <tr><th>#</th><th>Column</th></tr>
+                      </thead>
+                      <tbody style="height: 100%; display: block;">
+                        {% for h in info.headings %}
+                        <tr>
+                          <td class="mono">{{ loop.index }}</td>
+                          <td>{{ h }}</td>
+                        </tr>
+                        {% endfor %}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+                <div>
+                  <div class="section-title">Dataset Stats</div>
+                  <div class="kv">
+                    <div><span class="k">Shape</span><span class="v">{{ info.rows }}  {{ info.cols }}</span></div>
+                    <div><span class="k">Numeric Columns</span><span class="v">{{ info.numeric_columns if info.numeric_columns is not none else 0 }}</span></div>
+                    <div><span class="k">Dropped Features</span><span class="v">{{ info.dropped_features }}</span></div>
+                  </div>
+                  <div class="section-title" style="margin-top:14px">Top Feature-Target Correlations</div>
+                  <div class="table-wrap">
+                    <table class="tbl">
+                      <thead>
+                        <tr><th>#</th><th>Feature</th><th>Strength</th><th>Action</th></tr>
+                      </thead>
+                      <tbody>
+                        {% for idx, feat, val in info.top_features %}
+                        <tr data-corr="{{ '%.6f'|format(val) }}">
+                          <td class="mono">{{ idx }}</td>
+                          <td class="mono">{{ feat }}</td>
+                          <td class="mono">{{ '%.4f'|format(val) }}</td>
+                          <td>
+                            {% if feat in info.feature_plots %}
+                              <button class="btn-view-plot" onclick="openFeaturePlot('/{{ info.feature_plots[feat] }}?v={{ duration_ms }}', '{{ feat }}')" style="padding:4px 8px; background:#6ea8fe; color:#fff; border:none; border-radius:3px; cursor:pointer; font-size:11px;">View Plot</button>
+                            {% else %}
+                              <span style="font-size:11px; color:#a9b0c1;">No plot</span>
+                            {% endif %}
+                          </td>
+                        </tr>
+                        {% endfor %}
+                      </tbody>
+                    </table>
+                    <div class="mono" data-no-features style="display:none; font-size:12px; padding:6px 4px; color:#a9b0c1;">No features meet the current threshold.</div>
+                  </div>
+                  {% if info.plot_path %}
+                  <div class="section-title" style="margin-top:14px">Top Feature vs Encoded Target</div>
+                  <div class="plot-wrap">
+                    {% if info.plot_rel %}
+                    <img class="plot-img" src="{{ url_for('static', filename=info.plot_rel) }}?v={{ duration_ms }}" alt="Plot for {{ ds }}" />
+                    {% else %}
+                    <img class="plot-img" src="/{{ info.plot_path }}?v={{ duration_ms }}" alt="Plot for {{ ds }}" />
+                    {% endif %}
+                  </div>
+                  {% if info.target_key %}
+                  <div class="encoded-key" style="margin-top:10px;">
+                    <strong>Encoded Target Key:</strong>
+                    <ul style="margin:6px 0 0 0; padding-left:18px;">
+                      {% for k, v in info.target_key.items() %}
+                        <li><span class="mono">{{ k }}</span>: {{ v }}</li>
+                      {% endfor %}
+                    </ul>
+                  </div>
+                  {% endif %}
+                  {% endif %}
+                  {# classification inputs moved to consolidated section #}
+                </div>
+              </div>
+            </div>
+          </section>
+          {% endfor %}
+        {% endif %}
+
+        {% if error %}
+        <section class="card error">
+          <div class="card-header">
+            <h2>Errors</h2>
+          </div>
+            <pre class="card-body pre error-pre">{{ error }}</pre>
+        </section>
+        {% endif %}
+
+        <section class="card">
+          <div class="card-header">
+            <h2>main.py Output</h2>
+          </div>
+          <pre class="card-body pre">{{ output }}</pre>
+        </section>
+        {% endif %}
+      </main>
+    </div>
+
+    <!-- Image modal -->
+    <div id="imgModal" class="img-modal" aria-hidden="true">
+      <span class="close" aria-label="Close"></span>
+      <img id="imgModalContent" class="img-modal-content" alt="enlarged plot" />
+    </div>
+  </body>
+  <script>
+    // Click-to-enlarge for plots & slider value display
+    (function() {
+      const modal = document.getElementById('imgModal');
+      const modalImg = document.getElementById('imgModalContent');
+      function openModal(src) {
+        modalImg.src = src;
+        modal.style.display = 'block';
+      }
+      function closeModal() {
+        modal.style.display = 'none';
+        modalImg.src = '';
+      }
+      document.addEventListener('click', function(e){
+        if (e.target.classList && e.target.classList.contains('plot-img')) {
+          openModal(e.target.src);
+        }
+      });
+      modal.addEventListener('click', function(e){
+        if (e.target === modal || e.target.classList.contains('close')) {
+          closeModal();
+        }
+      });
+      document.addEventListener('keydown', function(e){
+        if (e.key === 'Escape') closeModal();
+      });
+      // Make openFeaturePlot globally accessible
+      window.openFeaturePlot = function(src, featureName) {
+        modalImg.src = src;
+        modalImg.alt = `Plot for ${featureName}`;
+        modal.style.display = 'block';
+      };
+      const slider = document.getElementById('min_correlation');
+      const mcVal = document.getElementById('mc_val');
+        const maSlider = document.getElementById('moving_avg_window');
+        const maVal = document.getElementById('ma_val');
+  const dsInput = null;
+      const form = document.getElementById('settingsForm');
+      const statusEl = document.getElementById('autosaveStatus');
+      let saveTimer = null;
+      function setStatus(msg, good=true){
+        if(!statusEl) return;
+        statusEl.textContent = msg || '';
+        statusEl.style.color = good ? '#6ea8fe' : '#ff6b6b';
+        if(msg){ setTimeout(()=>{ if(statusEl.textContent === msg) statusEl.textContent=''; }, 2500); }
+      }
+      function autoSave(){
+        if(!form) return;
+        const fd = new FormData(form);
+        fetch('/update_settings', { method:'POST', body: fd, headers: { 'X-Requested-With':'XMLHttpRequest' }} )
+          .then(r=>r.json())
+          .then(d=>{ if(d && d.status==='ok'){ setStatus('Saved'); } else { setStatus('Save failed', false);} })
+          .catch(()=> setStatus('Save error', false));
+      }
+      function scheduleSave(){
+        if(saveTimer) clearTimeout(saveTimer);
+        saveTimer = setTimeout(autoSave, 400);
+      }
+      function applyRowFiltering(){
+        if(!slider) return;
+        const th = parseFloat(slider.value);
+        document.querySelectorAll('table.tbl tbody').forEach(tb => {
+          const rows = Array.from(tb.querySelectorAll('tr[data-corr]'));
+          let visible = 0;
+          rows.forEach(r => {
+            const v = parseFloat(r.getAttribute('data-corr'));
+            if(!isNaN(v) && v >= th){ r.style.display=''; visible++; } else { r.style.display='none'; }
+          });
+          const noMsg = tb.parentElement.querySelector('[data-no-features]');
+          if(noMsg){ noMsg.style.display = visible===0 ? 'block':'none'; }
+        });
+      }
+      if (slider && mcVal) {
+        slider.addEventListener('input', () => {
+          mcVal.textContent = parseFloat(slider.value).toFixed(2);
+          applyRowFiltering();
+          scheduleSave();
+        });
+        slider.addEventListener('change', scheduleSave);
+      }
+      if (maSlider && maVal) {
+        const updateMaLabel = () => {
+          maVal.textContent = parseInt(maSlider.value, 10);
+        };
+        maSlider.addEventListener('input', () => {
+          updateMaLabel();
+          scheduleSave();
+        });
+        maSlider.addEventListener('change', scheduleSave);
+        updateMaLabel();
+      }
+      // datasets input removed
+      applyRowFiltering();
+  // Single-mode prediction logic
+      (function(){
+        const featDiv = document.getElementById('featureInputs');
+        const runBtn = document.getElementById('runPredict');
+        const statusEl = document.getElementById('predictStatus');
+        const resultBox = document.getElementById('predictResult');
+        function buildInputs(){
+          featDiv.innerHTML='';
+          fetch('/combined_curves')
+            .then(r=>r.json())
+            .then(curves => {
+              const feats = Object.keys(curves.features||{});
+              const fmt = (n) => {
+                if (!isFinite(n)) return 'n/a';
+                const a = Math.abs(n);
+                if ((a > 0 && a < 1e-3) || a >= 1e6) return n.toExponential(2);
+                return (+n.toFixed(4)).toString();
+              };
+              feats.forEach(f => {
+                const fx = (curves.features && curves.features[f] && curves.features[f].x) || [];
+                const minX = fx.length ? Math.min(...fx) : NaN;
+                const maxX = fx.length ? Math.max(...fx) : NaN;
+                const label = document.createElement('label');
+                label.style.cssText='display:flex; flex-direction:column; gap:3px; font-size:11px;';
+                const rangeTxt = ` (min ${fmt(minX)}, max ${fmt(maxX)})`;
+                label.innerHTML = `<span class=\"mono\" style=\"color:#a9b0c1;\">${f}${rangeTxt}</span>`;
+                const inp = document.createElement('input');
+                inp.type='number'; inp.name=f; inp.step='any';
+                inp.className='feat-input';
+                inp.style.cssText='padding:5px 6px; font-size:12px; background:#0a0f1f; border:1px solid #212a43; color:#e6e9f0; border-radius:4px;';
+                if (isFinite(minX)) inp.min = minX;
+                if (isFinite(maxX)) inp.max = maxX;
+                if (isFinite(minX) && isFinite(maxX)) inp.placeholder = `${fmt(minX)} .. ${fmt(maxX)}`;
+                label.appendChild(inp);
+                featDiv.appendChild(label);
+              });
+            }).catch(()=>{ featDiv.innerHTML='<div class="mono" style="font-size:12px; color:#ff6b6b;">Curve data unavailable.</div>';});
+        }
+        buildInputs();
+        runBtn.addEventListener('click', () => {
+          statusEl.textContent='Predicting...';
+          resultBox.style.display='none';
+          const payload = {};
+          featDiv.querySelectorAll('input[name]').forEach(inp => { const v=inp.value.trim(); if(v!=='') payload[inp.name]=parseFloat(v); });
+          fetch('/predict', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)})
+            .then(r=>r.json())
+            .then(data => {
+              if(data.error){ statusEl.textContent=data.error; return; }
+              statusEl.textContent='Done';
+              const lines = [
+                `Prediction: ${data.prediction}`,
+                `Average Encoded: ${data.avg_encoded}`,
+                `Nearest Index: ${data.nearest_index}`,
+                `Classes: ${data.available_classes.join(', ')}`,
+                '',
+                'Per-Feature Estimates:',
+                ...Object.entries(data.per_feature_estimates||{}).map(([k,v])=>`${k}: ${v}`)
+              ];
+              resultBox.innerHTML = '<div style="white-space: pre-wrap;">' + lines.join('\n') + '</div>';
+              
+              // Add buttons to view annotated plots
+              if(data.annotated_plots && Object.keys(data.annotated_plots).length > 0) {
+                const plotsDiv = document.createElement('div');
+                plotsDiv.style.cssText = 'margin-top: 12px; padding-top: 12px; border-top: 1px solid #212a43;';
+                plotsDiv.innerHTML = '<div style="font-weight: 600; margin-bottom: 8px;">View Your Points on Feature Graphs:</div>';
+                
+                const btnContainer = document.createElement('div');
+                btnContainer.style.cssText = 'display: flex; flex-wrap: wrap; gap: 8px;';
+                
+                Object.entries(data.annotated_plots).forEach(([feat, path]) => {
+                  const btn = document.createElement('button');
+                  btn.textContent = feat;
+                  btn.style.cssText = 'padding: 6px 12px; background: #28a745; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 11px; font-family: monospace;';
+                  btn.onclick = () => window.openFeaturePlot('/' + path + '?v=' + Date.now(), feat);
+                  btnContainer.appendChild(btn);
+                });
+                
+                plotsDiv.appendChild(btnContainer);
+                resultBox.appendChild(plotsDiv);
+              }
+              
+              resultBox.style.display='block';
+            }).catch(err=>{ statusEl.textContent='Error'; console.error(err); });
+        });
+      })();
+    })();
+  </script>
+  <script>
+// Update value display for sliders
+const mcSlider = document.getElementById('min_correlation');
+const mcVal = document.getElementById('mc_val');
+const maSlider = document.getElementById('moving_avg_window');
+const maVal = document.getElementById('ma_val');
+if (mcSlider && mcVal) {
+  mcSlider.addEventListener('input', e => {
+    mcVal.textContent = parseFloat(e.target.value).toFixed(2);
+  });
+}
+if (maSlider && maVal) {
+  maSlider.addEventListener('input', e => {
+    maVal.textContent = parseInt(e.target.value, 10);
+  });
+}
+</script>
+</body>
+</html>

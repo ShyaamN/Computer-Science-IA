@@ -1,0 +1,237 @@
+import requests, os, json, glob, pandas as pd, matplotlib.pyplot as plt
+import sklearn, flask, warnings, numpy as np
+from plotting import create_feature_plots
+import sys
+
+#-----------------------
+
+MIN_CORRELATION = float(sys.argv[1]) if len(sys.argv) > 1 else 0.3
+MIN_CORRELATION = max(0.0, min(1.0, MIN_CORRELATION))
+MIN_DATA_POINTS = int(sys.argv[2]) if len(sys.argv) > 2 else 20  # Minimum number of non-null data points required for a feature
+
+warnings.filterwarnings('ignore', category=RuntimeWarning)
+np.seterr(divide='ignore', invalid='ignore')
+
+#----------------------
+
+dfkep = pd.read_csv('data/training/kepler.csv', comment='#', on_bad_lines='skip')
+print(f"File: kepler.csv")
+print(f"Number of columns: {dfkep.shape[1]}")
+print(f"Headings: {dfkep.columns.tolist()}")
+print(f"Shape: {dfkep.shape}")
+print()
+
+target_col = 'koi_disposition'
+for col in dfkep.columns:
+    if dfkep[col].dtype == 'object' and col != target_col:
+        dfkep[col] = pd.to_numeric(dfkep[col], errors='coerce')
+
+dfkep = dfkep.dropna(subset=[target_col])
+threshold = dfkep.shape[1] * 0.5
+dfkep = dfkep.dropna(thresh=threshold)
+dfkep.reset_index(drop=True, inplace=True)
+
+print(f"After cleaning kepler.csv: {dfkep.shape[0]} rows, {dfkep.shape[1]} columns")
+numeric_cols = sum(1 for col in dfkep.columns if dfkep[col].dtype in ['int64', 'float64'])
+print(f"  Numeric columns: {numeric_cols}")
+print()
+
+#------------
+
+Xkep = dfkep.drop(columns=[target_col])
+Ykep = dfkep[target_col]
+
+target_values = list(Ykep.unique())
+# Replace alphabetical sorting with a predefined order based on likelihood of being a planet
+# Only use target values that actually exist in the data
+ordered_targets = ['FALSE POSITIVE', 'CANDIDATE', 'CONFIRMED']
+ordered_targets = [t for t in ordered_targets if t in target_values]
+
+label_to_idx = []
+for idx, v in enumerate(ordered_targets):
+    label_to_idx.append([v, idx])
+
+idx_to_label = []
+for pair in label_to_idx:
+    idx_to_label.append([pair[1], pair[0]])
+
+encoded_target = Ykep.map({pair[0]: pair[1] for pair in label_to_idx})
+
+# Correct the JSON serialization to handle idx_to_label as a list
+print(f"ENCODED_TARGET_KEY_JSON kepler.csv: " + json.dumps({str(k): v for k, v in idx_to_label}))
+print()
+
+#---------------
+
+print(f"Feature-feature correlation analysis for kepler.csv:")
+columns_to_drop = []
+
+numeric_columns = [col for col in dfkep.columns if dfkep[col].dtype in ['int64', 'float64']]
+
+for j in range(len(numeric_columns)):
+    for k in range(j + 1, len(numeric_columns)):
+        col1 = numeric_columns[j]
+        col2 = numeric_columns[k]
+        
+        if len(dfkep[col1].dropna()) > 1 and len(dfkep[col2].dropna()) > 1:
+            try:
+                corr = dfkep[col1].corr(dfkep[col2])
+                if pd.isna(corr) == False and abs(corr) > 0.8:
+                    corr1 = dfkep[col1].corr(pd.Series(encoded_target))
+                    corr2 = dfkep[col2].corr(pd.Series(encoded_target))
+                    
+                    if pd.isna(corr1) == False and pd.isna(corr2) == False:
+                        if abs(corr1) > abs(corr2):
+                            columns_to_drop.append(col2)
+                        else:
+                            columns_to_drop.append(col1)
+            except Exception as e:
+                print(f"Error: {col1} vs {col2}: {e}")
+
+if columns_to_drop == True:
+    columns_to_drop = list(set(columns_to_drop))
+    print(f"Dropping {len(columns_to_drop)} highly correlated features")
+    dfkep.drop(columns=columns_to_drop, inplace=True)
+
+#---------------
+
+print("\nFeature-target correlation analysis for kepler.csv:")
+feature_corr = {}
+
+# Create a proper series with matching index
+encoded_target_series = pd.Series(encoded_target.values, index=dfkep.index)
+
+for col in dfkep.columns:
+    if dfkep[col].dtype in ['int64', 'float64']:
+        try:
+            unique_vals = dfkep[col].dropna().unique()
+            if len(unique_vals) >= 3:
+                corr = dfkep[col].corr(encoded_target_series)
+                if pd.isna(corr) == False:
+                    feature_corr[col] = abs(corr)
+            elif len(unique_vals) > 0:
+                print(f"Skipping {col}: only {len(unique_vals)} unique values (minimum 3 required)")
+        except Exception as e:
+            print(f"Error calculating correlation for {col}: {e}")
+
+if len(feature_corr) > 0:
+    sorted_items = [(feature_name, feature_corr[feature_name]) for feature_name in feature_corr]
+    
+    for m in range(len(sorted_items)):
+        for n in range(len(sorted_items) - m - 1):
+            if sorted_items[n][1] < sorted_items[n + 1][1]:
+                sorted_items[n], sorted_items[n + 1] = sorted_items[n + 1], sorted_items[n]
+    
+    # Filter to only features that meet the correlation threshold
+    thresholded = [(feat_name, corr_val) for feat_name, corr_val in sorted_items if corr_val >= MIN_CORRELATION]
+
+    print(
+        f"Top {len(thresholded)} features (>= {MIN_CORRELATION:.2f}) for kepler.csv:" if thresholded else
+        f"Top 0 features (no features >= {MIN_CORRELATION:.2f}) for kepler.csv:"
+    )
+    for idx, (feat_name, corr_val) in enumerate(thresholded, start=1):
+        print(f"  {idx}. {feat_name}: {round(corr_val, 4)}")
+
+    important_features = [f for f, _ in thresholded]
+
+    # Generate plots for all top features using the plotting module
+    create_feature_plots(dfkep, encoded_target, thresholded, None)
+else:
+    print(f"No valid correlations found for kepler.csv")
+    important_features = []
+
+print()
+
+#----------------------
+
+print(f"MODEL_FEATURES kepler.csv: " + json.dumps(important_features))
+if len(important_features) > 0:
+    stats = {}
+    for f in important_features:
+        if f in dfkep.columns:
+            series = dfkep[f]
+            if series.dtype in ['int64','float64']:
+                try:
+                    min_v = float(series.min()) if len(series.dropna()) else None
+                    max_v = float(series.max()) if len(series.dropna()) else None
+                    stats[f] = {"min": min_v, "max": max_v}
+                except Exception:
+                    pass
+    print(f"STATS_FEATURES kepler.csv: " + json.dumps(stats))
+
+#--------------------
+
+try:
+    all_numeric = important_features if important_features else []
+    dfkep_tmp = dfkep.copy()
+    dfkep_tmp['target'] = dfkep_tmp['koi_disposition']
+    combined = dfkep_tmp.reindex(columns=['target'] + all_numeric)
+    combined.dropna(subset=['target'], inplace=True)
+    
+    combined_labels = list(combined['target'].unique())
+    ordered_targets_combined = sorted(combined_labels)
+    ordered_targets_combined = [lbl for lbl in ordered_targets_combined if lbl.upper() != 'REFUTED']
+    label_to_idx_combined = {v: i for i, v in enumerate(ordered_targets_combined)}
+    idx_to_label_combined = {i: v for v, i in label_to_idx_combined.items()}
+    combined['encoded_target'] = combined['target'].map(label_to_idx_combined)
+    combined = combined[combined['encoded_target'].notna()].copy()
+    combined['encoded_target'] = combined['encoded_target'].astype(int)
+    
+    print(f"File: kepler.csv (curves)")
+    print(f"Number of columns: {combined.shape[1]}")
+    print(f"Headings: {list(combined.columns)}")
+    print(f"Shape: {combined.shape}")
+    print(f"ENCODED_TARGET_KEY_JSON kepler.csv: " + json.dumps({str(k): v for k, v in idx_to_label_combined.items()}))
+    
+    usable_features = [f for f in all_numeric if f in combined.columns and combined[f].dropna().shape[0] >= 2]
+    print(f"MODEL_FEATURES kepler.csv: " + json.dumps(usable_features))
+    
+    stats = {}
+    for f in usable_features:
+        series = combined[f]
+        stats[f] = {"min": float(series.min()) if len(series.dropna()) else None,
+                    "max": float(series.max()) if len(series.dropna()) else None}
+    print(f"STATS_FEATURES kepler.csv: " + json.dumps(stats))
+    
+    curves = {}
+    for f in usable_features:
+        series_x = combined[f]
+        mask = series_x.notna() & combined['encoded_target'].notna()
+        x_vals = series_x[mask].to_numpy()
+        y_vals = combined['encoded_target'][mask].to_numpy()
+        if len(x_vals) < 3:
+            continue
+        order = np.argsort(x_vals)
+        x_sorted = x_vals[order]
+        y_sorted = y_vals[order]
+        window_size = max(3, min(len(y_sorted)//10, 40))
+        ma = np.convolve(y_sorted, np.ones(window_size)/window_size, mode='valid')
+        x_ma = x_sorted[window_size-1:]
+        if len(x_ma) > 400:
+            step = len(x_ma)//400
+            x_ma = x_ma[::step]
+            ma = ma[::step]
+        curves[f] = {
+            "x": x_ma.tolist(),
+            "y": ma.tolist(),
+            "window": window_size
+        }
+    
+    curves_payload = {
+        "classes": ordered_targets_combined,
+        "idx_to_label": idx_to_label_combined,
+        "label_to_idx": label_to_idx_combined,
+        "features": curves,
+        "min_correlation": MIN_CORRELATION
+    }
+    curves_path = os.path.join(os.path.dirname(__file__), 'combined_curves.json')
+    try:
+        with open(curves_path, 'w', encoding='utf-8') as f:
+            json.dump(curves_payload, f, ensure_ascii=False)
+        print(f"CURVES_FILE combined.csv: combined_curves.json")
+    except Exception as e:
+        print(f"Error writing curves file: {e}")
+except Exception as e:
+    print(f"Error building combined dataset: {e}")
+
+#---------------

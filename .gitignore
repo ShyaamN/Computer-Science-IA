@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+# .venv/ - included in repo for easy setup
+# venv/
+# ENV/
+# env/
+
+# Flask
+instance/
+.webassets-cache
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+*.log
+output.txt
+gemini_generate_debug.json
+gemini_response_debug.json
+dashboard_response.html
+static/plots/*.png
+!static/plots/.gitkeep
+
+# Data uploads
+data/uploads/*
+!data/uploads/.gitkeep
